@@ -1,97 +1,89 @@
 # 微信真隔离 wechat-isolate
 
-用 Android 多用户把微信关进独立空间「微信区」：它有自己独立的
-`/data/user/<id>` 和 `/storage/emulated/<id>`，主空间的照片、文件、通讯录、
-其他应用数据它都看不到。
+用 Android 多用户把微信关进独立空间「微信区」：它有独立的数据分区和存储，
+主空间的照片、文件、通讯录、其他应用数据它都看不到。再配一个「用户切换」App，一键往返。
 
 > 为什么不用权限回收或系统自带的「应用分身」？
-> 回收权限在系统设置里就能做，挡不住间接访问；应用分身（ColorOS 的 MultiApp，
-> 用户 999）和主空间共享媒体、共享通讯录，本质上不是隔离。真正把微信和数据隔开，
-> 只能靠 Android 的用户隔离——这也是本项目唯一做的事。
+>
+> - 回收权限在系统设置里就能做，挡不住间接访问；
+> - ColorOS 应用分身（user 999，`profile.CLONE`）和主空间**共享媒体、共享通讯录**
+>   （`mMediaSharedWithParent=true`），本质上不是隔离。
+>
+> 真正把微信和数据隔开，只能靠 Android 的用户隔离。
 
-## 要求
+## 原理
 
-- **root shell**（Magisk / KernelSU / APatch 等）——创建用户需要 `MANAGE_USERS`
-- Android 10+（在 Android 16 / ColorOS 16 上实测）
-- 部分 ROM 关闭了多用户（`fw.max_users=1` 或直接拒绝），脚本会报错
+1. `pm create-user` 建一个独立用户「微信区」（独立 `/data/user/<id>`、独立 `/storage/emulated/<id>`）
+2. `pm install-existing --user <id>` 把微信安装进去（复用已有 APK，不用重新下载）
+3. ColorOS 把系统自带的用户切换 UI 删了，所以配一个「用户切换」App：
+   - **主空间点按钮**：先拉起一个 root watchdog，再 `am switch-user` 切过去
+   - **微信区点按钮**：不需要 root，只写一个触发文件；主空间的 watchdog 收到后切回
+   - 实测 Android 16 上 root 进程能跨用户存活，所以 watchdog 方案成立
+4. Magisk 开机脚本兜底：重启后自动切回主用户
 
-## 用法
+## 实测环境
+
+一加 Turbo 6X Pro（PYR110）· ColorOS 16 / Android 16 · Magisk 30.7 · 微信 8.0.79
+
+## 文件
+
+| 文件 | 说明 |
+| --- | --- |
+| `wechat-isolate.sh` | 创建「微信区」、安装微信，以及切换/删除命令 |
+| `back-watcher.sh` | 主空间的 root watchdog（轮询触发文件，收到就切回） |
+| `install-userswitch.sh` | 安装「用户切换」App |
+| `userswitch/` | App 源码 + 预编译 APK |
+
+## 使用步骤
+
+把文件放到 `/sdcard/Download/DSH-Go/`（App 里写死了 watchdog 路径），然后：
 
 ```sh
-# 创建「微信区」并把微信装进去
-su -c 'sh /path/to/wechat-isolate.sh'
+# 1. 创建微信区并把微信装进去（期间会临时 permissive，结束自动恢复）
+su -c 'sh /sdcard/Download/DSH-Go/wechat-isolate.sh'
 
-# 切换到微信区（第一次要等系统初始化）
-su -c 'sh /path/to/wechat-isolate.sh --switch'
+# 2. 安装「用户切换」App
+su -c 'sh /sdcard/Download/DSH-Go/install-userswitch.sh'
 
-# 切回主空间
-su -c 'sh /path/to/wechat-isolate.sh --back'
-
-# 可选：确认微信区能用后，把主空间的微信卸掉
-su -c 'sh /path/to/wechat-isolate.sh --uninstall-main'
-
-# 删除微信区（连同里面的微信数据，主空间不受影响）
-su -c 'sh /path/to/wechat-isolate.sh --remove'
+# 3. 主空间打开「用户切换」→ 切到微信区
+# 4. 在微信区登录微信；要回来就点「切回机主」
 ```
 
-## 切回主空间
+兜底：切过去以后如果 App 没反应，直接**重启手机**，开机脚本会切回主用户。
 
-切到微信区之后，主空间的 Termux / 助手都停了，不能再用 `--back`，所以脚本会顺便把
-系统自带的多用户切换入口打开（`settings put global user_switcher_enabled 1`）：
+其他命令：
 
-1. 下拉**快捷设置面板**（或者锁屏）→ 右上角的**用户头像** → 选「机主」
-2. 也可以在微信区里装一个终端（Termux），执行 `su -c 'am switch-user 0'`
+```sh
+su -c 'sh .../wechat-isolate.sh --switch'        # 切到微信区
+su -c 'sh .../wechat-isolate.sh --back'          # 切回主空间
+su -c 'sh .../wechat-isolate.sh --remove'        # 删除微信区
+su -c 'sh .../wechat-isolate.sh --uninstall-main'# 主空间卸载微信
+```
 
-> 建议切过去之前先确认快捷设置里能看到用户头像；看不到就先别切。
+首次切过去需要完成新用户的系统初始化；微信要重新登录。
 
-## 隔离了什么
+## 已知限制
 
-| | 主空间 | 微信区 |
-| --- | --- | --- |
-| 内部存储 | `/data/user/0` | `/data/user/<id>` |
-| 共享存储 | `/storage/emulated/0` | `/storage/emulated/<id>` |
-| 照片 / 文件 | 主空间的 | 微信区独立的（初始为空） |
-| 通讯录 | 主空间的 | 微信区独立的（初始为空） |
-| 其他 App 数据 | 互不可见 | 互不可见 |
+- **SELinux**：部分 ROM 的 root shell（Magisk 域）在 enforcing 下调用 `pm` / `am` 会被拦
+  （`Failure calling service ... Failed transaction`）。脚本会临时 `setenforce 0`，结束后恢复；
+  watchdog 也会在切换完成 5 秒后自动恢复 enforcing。
+- **ColorOS 应用分身不是隔离**：user 999 是 `profile.CLONE`，和主空间共享媒体与通讯录。
+- **没有系统用户切换 UI**：ColorOS 删掉了 `user_switcher_enabled` 对应的快捷入口，
+  所以用「App + watchdog」补上。
+- 微信区只在是当前用户时在线，消息、语音/视频通话会漏。
+- 旧聊天记录不会跟过去：先在主空间用电脑版微信备份，切过去后恢复。
+- 微信区里的 App 都是全新安装，需要重新登录（本工具不迁移应用数据）。
 
-微信只能看到「微信区」里的数据，主空间的照片、文件、通讯录它都碰不到。
+## 构建 App
 
-## 没隔离的
+`userswitch/build.sh` 在 Ubuntu / proot 里用 JDK + `aapt` + `dx` + `apksigner` 打包。
+需要自己把 API 33 的 `android.jar` 放到 `userswitch/android.jar`（脚本不负责下载）。
 
-- 微信仍然联网，聊天内容仍然经过腾讯服务器（本工具不管服务端）。
-- 系统级能力（拨号、通知栏、剪贴板等）由 Android 统一提供，不按用户隔离。
-- 微信区里自己产生的照片/文件，微信当然能看（那个空间是给它用的，初始为空）。
-
-## 聊天记录怎么办
-
-旧微信的记录不会自动带过去。可行做法：
-
-1. **电脑版微信**：主空间微信 → 备份到电脑；切到微信区 → 从电脑恢复。
-2. 微信自带的「聊天记录迁移」要求两台设备同网，切用户期间主空间不在线，同一台手机上用不了。
-
-## 代价
-
-- 用微信要切用户，切过去后主空间的其他 App 暂停（数据不会丢）。
-- 微信只在「微信区」是当前用户时在线，消息、语音/视频通话会漏。
-- 第一次切换要等系统初始化，可能要简单设置一下新用户。
-
-## 兼容性 / 已知问题
-
-- **SELinux（实测 ColorOS + Magisk）**：root shell 处于 `u:r:magisk:s0` 时，
-  调用 `pm` / `cmd` / `am` 会报 `Failure calling service ... Failed transaction`。
-  脚本会临时 `setenforce 0`，完成操作后自动恢复原来的状态。
-- **ColorOS 应用分身（user 999, `profile.CLONE`）**：和主空间共享媒体与通讯录，
-  不是隔离空间，本项目不使用。
-- 有些 ROM 直接关闭多用户（`Max users: 1`），此时只能换方案。
-
-实测环境：一加 Turbo 6X Pro（PYR110）· ColorOS 16（Android 16）· Magisk。
-
-## FAQ
-
-- **创建失败？** 看输出：`Max users` 已满或 ROM 禁用多用户时无法创建。
-- **微信装不进微信区？** 重试 `pm install-existing --user <id> com.tencent.mm`，或在微信区里用应用商店安装。
-- **想恢复原样？** `--remove` 删掉用户即可，主空间数据一直都在。
-- **为什么没有权限收紧脚本？** 回收权限在系统设置里就能做，而且挡不住间接访问；真隔离只能靠独立用户。
+```sh
+cd userswitch
+sh build.sh
+# 产物：build/userswitch.apk
+```
 
 ## License
 
