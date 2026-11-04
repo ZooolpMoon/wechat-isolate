@@ -34,6 +34,16 @@ su -c 'sh /path/to/wechat-isolate.sh --uninstall-main'
 su -c 'sh /path/to/wechat-isolate.sh --remove'
 ```
 
+## 切回主空间
+
+切到微信区之后，主空间的 Termux / 助手都停了，不能再用 `--back`，所以脚本会顺便把
+系统自带的多用户切换入口打开（`settings put global user_switcher_enabled 1`）：
+
+1. 下拉**快捷设置面板**（或者锁屏）→ 右上角的**用户头像** → 选「机主」
+2. 也可以在微信区里装一个终端（Termux），执行 `su -c 'am switch-user 0'`
+
+> 建议切过去之前先确认快捷设置里能看到用户头像；看不到就先别切。
+
 ## 隔离了什么
 
 | | 主空间 | 微信区 |

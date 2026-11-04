@@ -34,6 +34,9 @@ if [ "$ENFORCE" = "1" ]; then
   setenforce 0 2>/dev/null && say "（临时关闭 SELinux 强制，结束自动恢复）"
 fi
 
+# 打开系统的多用户切换入口（快捷设置 / 锁屏右上角的用户头像），方便切回主空间
+settings put global user_switcher_enabled 1 2>/dev/null
+
 get_id() { pm list users 2>/dev/null | grep "$NAME" | sed -n 's/.*UserInfo{\([0-9][0-9]*\):.*/\1/p'; }
 has_pkg() { pm list packages --user "$1" 2>/dev/null | grep -q "^package:com\.tencent\.mm$"; }
 
@@ -43,6 +46,7 @@ case "$MODE" in
   --switch)
     [ -n "$ID" ] || { say "还没有创建「$NAME」，先跑一次：su -c 'sh $0'"; exit 1; }
     say "切换到用户 $ID（微信区）..."
+    say "切回主空间：下拉快捷设置面板 → 右上角用户头像 → 机主"
     am switch-user "$ID" 2>&1
     ;;
   --back)
