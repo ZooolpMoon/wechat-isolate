@@ -1,15 +1,19 @@
 #!/system/bin/sh
-# wechat-isolate.sh v2.0
+# wechat-isolate.sh v2.1
 # 用 Android 多用户把微信隔离到独立空间「微信区」。
 # 微信区有自己独立的 /data/user/<id> 和 /storage/emulated/<id>，
 # 主空间的照片、文件、通讯录、其他应用数据它都看不到。
 #
 # 用法（需要 root shell）：
-#   创建并安装:      su -c 'sh /path/to/wechat-isolate.sh'
+#   创建 + 装微信:   su -c 'sh /path/to/wechat-isolate.sh'
 #   切换到微信区:    su -c 'sh /path/to/wechat-isolate.sh --switch'
 #   切回主空间:      su -c 'sh /path/to/wechat-isolate.sh --back'
 #   主空间卸掉微信:  su -c 'sh /path/to/wechat-isolate.sh --uninstall-main'
 #   删除微信区:      su -c 'sh /path/to/wechat-isolate.sh --remove'
+#
+# 备注：部分 ROM（如 ColorOS）的 root shell（Magisk 域）调用系统服务会被 SELinux
+# 拦截，报 "Failure calling service ... Failed transaction"。脚本会临时把 SELinux
+# 设为 permissive 来完成操作，结束时自动恢复。
 
 export PATH=/system/bin:/system/xbin:/vendor/bin:/sbin:/debug_ramdisk:$PATH
 NAME=微信区
@@ -18,13 +22,20 @@ say() { echo "$@"; }
 
 [ "$(id -u)" = "0" ] || { say "需要 root：su -c 'sh $0'"; exit 1; }
 
-get_id() {
-  pm list users 2>/dev/null | grep "$NAME" | sed -n 's/.*UserInfo{\([0-9][0-9]*\):.*/\1/p'
+ENFORCE=$(cat /sys/fs/selinux/enforce 2>/dev/null)
+restore_se() {
+  if [ -n "$ENFORCE" ] && [ -f /sys/fs/selinux/enforce ]; then
+    setenforce "$ENFORCE" 2>/dev/null
+  fi
 }
+trap restore_se EXIT
+trap 'restore_se; exit 130' INT TERM
+if [ "$ENFORCE" = "1" ]; then
+  setenforce 0 2>/dev/null && say "（临时关闭 SELinux 强制，结束自动恢复）"
+fi
 
-has_wechat() {
-  pm list packages --user "$1" 2>/dev/null | grep -q '^package:com\.tencent\.mm$'
-}
+get_id() { pm list users 2>/dev/null | grep "$NAME" | sed -n 's/.*UserInfo{\([0-9][0-9]*\):.*/\1/p'; }
+has_pkg() { pm list packages --user "$1" 2>/dev/null | grep -q "^package:com\.tencent\.mm$"; }
 
 ID=$(get_id)
 
@@ -53,26 +64,29 @@ case "$MODE" in
       pm create-user "$NAME" 2>&1
       ID=$(get_id)
     else
-      say "「$NAME」已存在，id = $ID"
+      say "「$NAME」已存在 (id=$ID)"
     fi
     if [ -z "$ID" ]; then
-      say "!! 创建用户失败：这个 ROM 可能关闭了多用户（fw.max_users=1）。"
+      say "!! 创建用户失败：见上面的报错。"
       exit 1
     fi
 
     say "把微信装进用户 $ID ..."
-    if has_wechat "$ID"; then
+    if has_pkg "$ID"; then
       say "微信已经在微信区里了"
     else
       pm install-existing --user "$ID" com.tencent.mm 2>&1 \
         || cmd package install-existing --user "$ID" com.tencent.mm 2>&1
-      if has_wechat "$ID"; then
+      if has_pkg "$ID"; then
         say "微信已安装到微信区"
       else
         say "!! 自动安装失败。可以切到微信区后用应用商店手动安装微信。"
       fi
     fi
 
+    say ""
+    say "当前用户列表："
+    pm list users 2>&1
     say ""
     say "下一步："
     say "  1) 切换过去:   su -c 'sh $0 --switch'"
